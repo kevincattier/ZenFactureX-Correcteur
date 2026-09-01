@@ -3,6 +3,7 @@ import tempfile
 import os
 import traceback
 import facturx
+import re
 
 st.title("📄 Correcteur Factur-X (Ajout BT-13)")
 
@@ -25,27 +26,30 @@ if uploaded_file and po_reference:
                 if isinstance(xml_content, dict):
                     xml_content = list(xml_content.values())[0]
                 
-                # Conversion en texte brut pour préserver 100% de la structure d'origine
                 if isinstance(xml_content, bytes):
                     xml_str = xml_content.decode('utf-8')
                 else:
                     xml_str = str(xml_content)
                     
-                # 2. Modification du XML par injection directe
-                target_tag = "</ram:ApplicableHeaderTradeAgreement>"
-                if target_tag not in xml_str:
-                    st.error("Balise ApplicableHeaderTradeAgreement introuvable.")
-                else:
-                    bt13_xml = f"""
+                # 2. Modification du XML par Regex
+                bt13_xml = f"""
     <ram:BuyerOrderReferencedDocument>
         <ram:IssuerAssignedID>{po_reference}</ram:IssuerAssignedID>
     </ram:BuyerOrderReferencedDocument>
 </ram:ApplicableHeaderTradeAgreement>"""
-                    
-                    new_xml_str = xml_str.replace(target_tag, bt13_xml)
+                
+                new_xml_str = re.sub(r'</ram:ApplicableHeaderTradeAgreement\s*>', bt13_xml, xml_str)
+                
+                # 3. Vérification stricte de l'injection
+                verification_tag = f"<ram:IssuerAssignedID>{po_reference}</ram:IssuerAssignedID>"
+                
+                if verification_tag not in new_xml_str:
+                    st.error("❌ Échec de la vérification : La balise BT-13 n'a pas pu être injectée dans le code.")
+                else:
+                    st.success("✅ Vérification du XML réussie : Le BT-13 a bien été détecté.")
                     new_xml_bytes = new_xml_str.encode('utf-8')
                     
-                    # 3. Préparation des fichiers temporaires
+                    # 4. Préparation des fichiers temporaires
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf_in, \
                          tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf_clean, \
                          tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp_xml:
@@ -57,25 +61,22 @@ if uploaded_file and po_reference:
                         tmp_pdf_clean_path = tmp_pdf_clean.name
                         tmp_xml_path = tmp_xml.name
                         
-                    # 4. Suppression de l'ancienne pièce jointe du PDF via Ghostscript
+                    # 5. Nettoyage et recompilation
                     os.system(f"gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOutputFile={tmp_pdf_clean_path} {tmp_pdf_in_path}")
                     
-                    # 5. Incrustation du nouveau XML exclusif
                     tmp_pdf_out_path = tempfile.mktemp(suffix=".pdf")
                     facturx.generate_from_file(tmp_pdf_clean_path, tmp_xml_path, output_pdf_file=tmp_pdf_out_path)
                     
                     with open(tmp_pdf_out_path, 'rb') as f:
                         final_pdf_bytes = f.read()
                         
-                    st.success("Facture corrigée avec succès !")
                     st.download_button(
-                        label="⬇️ Télécharger la facture finale", 
+                        label="⬇️ Télécharger la facture finale validée", 
                         data=final_pdf_bytes, 
                         file_name=f"Facture_BT13_{po_reference}.pdf", 
                         mime="application/pdf"
                     )
                     
-                    # Nettoyage sécurisé
                     for p in [tmp_pdf_in_path, tmp_pdf_clean_path, tmp_xml_path, tmp_pdf_out_path]:
                         if os.path.exists(p):
                             os.remove(p)
